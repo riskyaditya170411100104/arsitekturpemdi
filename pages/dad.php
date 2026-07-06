@@ -45,7 +45,12 @@ $skpdList = db()->query('SELECT id, kode_skpd, nama_skpd FROM skpd ORDER BY kode
 $programList = db()->query('SELECT id, kode_program, nama_program, id_skpd, id_rad FROM program ORDER BY kode_program, nama_program')->fetchAll();
 $radList = db()->query('SELECT id, kode_rad_4, nama_rad_4 FROM rad ORDER BY kode_rad_4, nama_rad_4')->fetchAll();
 $dabList = db()->query('SELECT d.id, d.nama_bisnis, s.kode_skpd, s.nama_skpd, p.kode_program FROM dab d LEFT JOIN skpd s ON s.id=d.id_skpd LEFT JOIN program p ON p.id=d.id_program ORDER BY s.kode_skpd, p.kode_program, d.id')->fetchAll();
-$dalList = db()->query('SELECT id, nama_layanan FROM dal ORDER BY nama_layanan')->fetchAll();
+$dalList = db()->query(
+    'SELECT d.id, d.id_program, d.nama_layanan
+     FROM dal d
+     INNER JOIN program p ON p.id = d.id_program
+     ORDER BY d.id, d.nama_layanan'
+)->fetchAll();
 $securityLists = [];
 foreach ($securityFields as $field => [$label, $table]) {
     $securityLists[$field] = db()->query("SELECT id, nama FROM {$table} ORDER BY nama")->fetchAll();
@@ -59,6 +64,8 @@ $validIds = [
 foreach ($securityLists as $field => $list) $validIds[$field] = array_flip(array_map('intval', array_column($list, 'id')));
 $programMap = [];
 foreach ($programList as $program) $programMap[(int) $program['id']] = $program;
+$dalMap = [];
+foreach ($dalList as $dal) $dalMap[(int) $dal['id']] = $dal;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
@@ -89,6 +96,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach (array_merge(['id_dal'], array_keys($securityFields)) as $field) {
             $id = dad_int_or_null($formState[$field]);
             if ($id && !isset($validIds[$field][$id])) $formErrors[] = 'Pilihan ' . str_replace('id_', '', str_replace('_', ' ', $field)) . ' tidak valid.';
+        }
+        $idDal = dad_int_or_null($formState['id_dal']);
+        if ($idDal && $idProgram && isset($dalMap[$idDal]) && (int) $dalMap[$idDal]['id_program'] !== $idProgram) {
+            $formErrors[] = 'Layanan terkait tidak sesuai dengan program.';
         }
         if ($action === 'update' && !$recordId) $formErrors[] = 'ID data DAD tidak valid.';
 
@@ -197,6 +208,11 @@ $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
 $stmt->execute();
 $rows = $stmt->fetchAll();
 $programJson = array_map(static fn(array $p): array => ['id'=>(int)$p['id'],'skpd_id'=>(int)$p['id_skpd'],'rad_id'=>$p['id_rad'] ? (int)$p['id_rad'] : null,'label'=>dad_label($p['kode_program'],$p['nama_program'])], $programList);
+$dalJson = array_map(static fn(array $d): array => [
+    'id' => (int) $d['id'],
+    'program_id' => (int) $d['id_program'],
+    'label' => sprintf('DAL-%03d %s', (int) $d['id'], trim((string) $d['nama_layanan'])),
+], $dalList);
 $dabLabelMap = [];
 foreach ($dabList as $dab) $dabLabelMap[(int) $dab['id']] = sprintf('DAB-%03d - %s', (int) $dab['id'], (string) $dab['nama_bisnis']);
 ?>
@@ -258,7 +274,7 @@ foreach ($dabList as $dab) $dabLabelMap[(int) $dab['id']] = sprintf('DAB-%03d - 
         <label><span class="form-label">Penghasil Data</span><select name="penghasil_data" data-dad-field="penghasil_data" class="form-control"><option value="">Pilih Penghasil Data</option><?php foreach($skpdList as $x): $label = dad_label($x['kode_skpd'],$x['nama_skpd']); ?><option value="<?= e($label) ?>"><?= e($label) ?></option><?php endforeach;?></select></label>
         <label><span class="form-label">Interoperabilitas</span><input name="interoperabilitas" data-dad-field="interoperabilitas" maxlength="255" class="form-control"></label>
     </div>
-    <label><span class="form-label">Layanan Terkait</span><select name="id_dal" data-dad-field="id_dal" class="form-control"><option value="">Tidak ada</option><?php foreach($dalList as $x):?><option value="<?= $x['id'] ?>"><?= e(sprintf('DAL-%03d', (int) $x['id']) . ' - ' . $x['nama_layanan']) ?></option><?php endforeach;?></select></label>
+    <label><span class="form-label">Layanan Terkait</span><select name="id_dal" data-dad-field="id_dal" class="form-control"><option value="">Pilih program terlebih dahulu</option></select><span class="mt-1 block text-[11px] text-slate-500">Pilihan layanan disesuaikan dengan program yang dipilih.</span></label>
     <section class="rounded-xl border border-slate-200 bg-white p-3"><h3 class="text-sm font-semibold">Kontrol Keamanan <span class="font-normal text-slate-400">(opsional)</span></h3><div class="mt-3 grid gap-3 lg:grid-cols-2"><?php foreach($securityFields as $f=>[$l,$t]):?><label><span class="form-label"><?= e($l) ?></span><select name="<?= $f ?>" data-dad-field="<?= $f ?>" class="form-control"><option value="">Tidak ada</option><?php foreach($securityLists[$f] as $x):?><option value="<?= $x['id'] ?>"><?= e($x['nama']) ?></option><?php endforeach;?></select></label><?php endforeach;?></div></section>
     </div><footer class="flex justify-end gap-2 border-t border-slate-200 bg-white px-4 py-3 sm:px-5"><button type="button" data-close class="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold">Batal</button><button class="rounded-lg bg-red-700 px-5 py-2 text-sm font-semibold text-white" data-dad-submit>Simpan Data</button></footer></form></div>
 
@@ -267,15 +283,16 @@ foreach ($dabList as $dab) $dabLabelMap[(int) $dab['id']] = sprintf('DAB-%03d - 
 <div class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/70 p-4" data-modal="dad-delete"><form method="post" class="w-full max-w-md rounded-2xl bg-white p-6"><?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" data-delete-id><h2 class="text-xl font-bold">Hapus Data DAD?</h2><p class="mt-3 rounded bg-slate-50 p-4" data-delete-name></p><div class="mt-4 flex justify-end gap-2"><button type="button" data-close class="rounded border px-4 py-2">Batal</button><button class="rounded bg-red-700 px-4 py-2 text-white">Ya, Hapus</button></div></form></div>
 
 <script>
-(()=>{const modals=document.querySelectorAll('[data-modal]'),form=document.querySelector('[data-modal="dad-form"]'),view=document.querySelector('[data-modal="dad-view"]'),del=document.querySelector('[data-modal="dad-delete"]'),dabModal=document.querySelector('[data-modal="dad-dab"]'),fields=<?= json_encode(array_merge(['id'],$dadFields)) ?>,programs=<?= json_encode($programJson,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) ?>,posted=<?= json_encode($formState,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) ?>;
-const f=n=>form.querySelector(`[data-dad-field="${n}"]`),skpd=f('id_skpd'),program=f('id_program'),rad=f('id_rad'),dabs=form.querySelector('[data-dad-dab]'),dabSummary=form.querySelector('[data-dad-dab-summary]'),dabSearch=dabModal.querySelector('[data-dad-dab-search]'),dabRows=dabModal.querySelectorAll('[data-dab-row]'),dabChecks=dabModal.querySelectorAll('[data-dab-check]'),dabEmpty=dabModal.querySelector('[data-dad-dab-empty]'),dabCount=dabModal.querySelector('[data-dad-dab-count]'),open=m=>{m.classList.remove('hidden');m.classList.add('flex')},close=m=>{m.classList.add('hidden');m.classList.remove('flex')};
+(()=>{const modals=document.querySelectorAll('[data-modal]'),form=document.querySelector('[data-modal="dad-form"]'),view=document.querySelector('[data-modal="dad-view"]'),del=document.querySelector('[data-modal="dad-delete"]'),dabModal=document.querySelector('[data-modal="dad-dab"]'),fields=<?= json_encode(array_merge(['id'],$dadFields)) ?>,programs=<?= json_encode($programJson,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) ?>,dals=<?= json_encode($dalJson,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) ?>,posted=<?= json_encode($formState,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) ?>;
+const f=n=>form.querySelector(`[data-dad-field="${n}"]`),skpd=f('id_skpd'),program=f('id_program'),rad=f('id_rad'),dal=f('id_dal'),penghasil=f('penghasil_data'),dabs=form.querySelector('[data-dad-dab]'),dabSummary=form.querySelector('[data-dad-dab-summary]'),dabSearch=dabModal.querySelector('[data-dad-dab-search]'),dabRows=dabModal.querySelectorAll('[data-dab-row]'),dabChecks=dabModal.querySelectorAll('[data-dab-check]'),dabEmpty=dabModal.querySelector('[data-dad-dab-empty]'),dabCount=dabModal.querySelector('[data-dad-dab-count]'),open=m=>{m.classList.remove('hidden');m.classList.add('flex')},close=m=>{m.classList.add('hidden');m.classList.remove('flex')};
 const selectedDabIds=()=>[...dabs.selectedOptions].map(o=>Number(o.value));
 const syncDabUi=()=>{const ids=selectedDabIds(),labels=[...dabs.selectedOptions].map(o=>o.textContent.trim());dabChecks.forEach(c=>c.checked=ids.includes(Number(c.value)));dabSummary.replaceChildren(...(labels.length?labels.map(label=>{const row=document.createElement('div');row.textContent=label;return row;}):[document.createTextNode('Belum ada DAB dipilih.')]));dabCount.textContent=`${labels.length} DAB dipilih`};
 const filterDabs=()=>{const keyword=dabSearch.value.trim().toLowerCase();let shown=0;dabRows.forEach(row=>{const match=!keyword||row.dataset.search.includes(keyword);row.classList.toggle('hidden',!match);if(match)shown++});dabEmpty.classList.toggle('hidden',shown>0)};
 const refresh=s=>{program.innerHTML='';program.add(new Option(skpd.value?'Pilih Program':'Pilih SKPD terlebih dahulu',''));programs.filter(x=>String(x.skpd_id)===skpd.value).forEach(x=>{let o=new Option(x.label,x.id);o.dataset.rad=x.rad_id||'';program.add(o)});program.disabled=!skpd.value;if(s)program.value=s};
+const refreshDal=s=>{const programId=Number(program.value||0);dal.innerHTML='';dal.add(new Option(programId?'Tidak ada layanan terkait':'Pilih program terlebih dahulu',''));dals.filter(x=>Number(x.program_id)===programId).forEach(x=>dal.add(new Option(x.label,String(x.id))));dal.disabled=!programId;if(s)dal.value=String(s)};
 const normalizeChoice=(n,v)=>['sifat_data','jenis_data','validitas_data'].includes(n)?String(v||'').toLowerCase():v;
-const fill=r=>{fields.forEach(n=>{if(f(n))f(n).value=normalizeChoice(n,r[n])||''});refresh(String(r.id_program||''));[...dabs.options].forEach(o=>o.selected=(r.id_dab||[]).map(Number).includes(Number(o.value)));syncDabUi()};
-skpd.onchange=()=>refresh('');program.onchange=()=>{let x=program.selectedOptions[0]?.dataset.rad;if(x)rad.value=x};
+const fill=r=>{fields.forEach(n=>{if(f(n))f(n).value=normalizeChoice(n,r[n])||''});refresh(String(r.id_program||''));refreshDal(String(r.id_dal||''));[...dabs.options].forEach(o=>o.selected=(r.id_dab||[]).map(Number).includes(Number(o.value)));syncDabUi()};
+skpd.onchange=()=>{refresh('');refreshDal('');penghasil.value=skpd.selectedOptions[0]?.textContent.trim()||''};program.onchange=()=>{let x=program.selectedOptions[0]?.dataset.rad;if(x)rad.value=x;refreshDal('')};
 dabChecks.forEach(c=>c.onchange=()=>{const option=[...dabs.options].find(o=>o.value===c.value);if(option)option.selected=c.checked;syncDabUi()});
 dabSearch.oninput=filterDabs;
 form.querySelector('[data-dad-dab-open]').onclick=()=>{syncDabUi();filterDabs();open(dabModal);dabSearch.focus()};
@@ -284,5 +301,5 @@ document.querySelector('[data-dad-add]').onclick=()=>{fill({id_dab:[]});form.que
 document.querySelectorAll('[data-dad-edit]').forEach(b=>b.onclick=()=>{fill(JSON.parse(b.dataset.record));form.querySelector('[data-dad-action]').value='update';form.querySelector('[data-dad-title]').textContent='Edit Data DAD';form.querySelector('[data-dad-submit]').textContent='Simpan Perubahan';open(form)});
 document.querySelectorAll('[data-dad-view]').forEach(b=>b.onclick=()=>{let r=JSON.parse(b.dataset.record);view.querySelectorAll('[data-view]').forEach(x=>x.textContent=r[x.dataset.view]||'—');open(view)});
 document.querySelectorAll('[data-dad-delete]').forEach(b=>b.onclick=()=>{del.querySelector('[data-delete-id]').value=b.dataset.id;del.querySelector('[data-delete-name]').textContent=b.dataset.name;open(del)});
-document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>close(b.closest('[data-modal]')));modals.forEach(m=>m.onclick=e=>{if(e.target===m)close(m)});refresh(String(posted.id_program||''));syncDabUi();<?php if($openFormModal):?>fill(posted);form.querySelector('[data-dad-action]').value=<?= json_encode($formMode) ?>;open(form);<?php endif;?>})();
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>close(b.closest('[data-modal]')));modals.forEach(m=>m.onclick=e=>{if(e.target===m)close(m)});refresh(String(posted.id_program||''));refreshDal(String(posted.id_dal||''));syncDabUi();<?php if($openFormModal):?>fill(posted);form.querySelector('[data-dad-action]').value=<?= json_encode($formMode) ?>;open(form);<?php endif;?>})();
 </script>

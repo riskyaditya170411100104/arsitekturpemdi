@@ -305,6 +305,41 @@ function require_role(string $role): void
     }
 }
 
+function user_can(string $page, string $action, ?array $user = null): bool
+{
+    $user ??= current_user();
+    if (!$user) {
+        return false;
+    }
+
+    if (($user['role'] ?? '') === 'admin') {
+        return true;
+    }
+
+    if (($user['role'] ?? '') !== 'user') {
+        return false;
+    }
+
+    if ($action === 'view') {
+        return true;
+    }
+
+    $domainPages = ['dab', 'dal', 'dad', 'daa'];
+    $isDomainPage = in_array($page, $domainPages, true)
+        || str_starts_with($page, 'dai-')
+        || str_starts_with($page, 'dak-');
+
+    if ($isDomainPage || $page === 'peta-rencana') {
+        return in_array($action, ['create', 'update', 'delete'], true);
+    }
+
+    if ($page === 'pemdi-evidence') {
+        return $action === 'update';
+    }
+
+    return false;
+}
+
 function role_label(string $role): string
 {
     return $role === 'admin' ? 'Administrator' : 'Pengguna';

@@ -153,6 +153,21 @@ if (!isset($routes[$page])) {
     redirect('index.php?page=dashboard');
 }
 
+$pagePermissions = [
+    'create' => user_can($page, 'create', $user),
+    'update' => user_can($page, 'update', $user),
+    'delete' => user_can($page, 'delete', $user),
+];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $requestedAction = (string) ($_POST['action'] ?? '');
+    if (isset($pagePermissions[$requestedAction]) && !$pagePermissions[$requestedAction]) {
+        http_response_code(403);
+        set_flash('error', 'Anda tidak memiliki kewenangan untuk melakukan tindakan tersebut.');
+        redirect('index.php?page=' . rawurlencode($page));
+    }
+}
+
 $activeRoute = $routes[$page];
 $flash = flash();
 $referencePages = ['rab', 'ral', 'rad', 'raa', 'rai', 'rak'];
@@ -512,7 +527,23 @@ $pageContent = ob_get_clean();
         </main>
     </div>
 
-    <script>
+        <script>
+            const pagePermissions = <?= json_encode($pagePermissions, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            document.querySelectorAll('button, a').forEach((element) => {
+                const attributeNames = element.getAttributeNames();
+                const permission = attributeNames.some((name) => /^data-.+-add$/.test(name))
+                    ? 'create'
+                    : attributeNames.some((name) => /^data-.+-edit$/.test(name))
+                        ? 'update'
+                        : attributeNames.some((name) => /^data-.+-delete$/.test(name))
+                            ? 'delete'
+                            : null;
+
+                if (permission && !pagePermissions[permission]) {
+                    element.remove();
+                }
+            });
+
         if (window.lucide) lucide.createIcons();
 
         const sidebar = document.querySelector('[data-sidebar]');

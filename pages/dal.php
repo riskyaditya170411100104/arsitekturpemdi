@@ -12,7 +12,7 @@ $openFormModal = false;
 $formMode = 'create';
 $formState = array_fill_keys($dalFields, '');
 $formState['id'] = '';
-$formState['id_dab'] = [];
+$formState['id_dab'] = '';
 
 function dal_int_or_null(mixed $value): ?int
 {
@@ -40,14 +40,19 @@ $ralList = db()->query(
     'SELECT id, kode_ral_4, nama_ral_4 FROM ral ORDER BY kode_ral_4, nama_ral_4'
 )->fetchAll();
 $dabList = db()->query(
-    'SELECT d.id, d.nama_bisnis, s.kode_skpd
-     FROM dab d LEFT JOIN skpd s ON s.id = d.id_skpd
+    'SELECT d.id, d.id_program, d.nama_bisnis, s.kode_skpd
+     FROM dab d
+     INNER JOIN program p ON p.id = d.id_program
+     LEFT JOIN skpd s ON s.id = d.id_skpd
      ORDER BY s.kode_skpd, d.nama_bisnis'
 )->fetchAll();
 
 $skpdIds = array_flip(array_map('intval', array_column($skpdList, 'id')));
 $ralIds = array_flip(array_map('intval', array_column($ralList, 'id')));
-$dabIds = array_flip(array_map('intval', array_column($dabList, 'id')));
+$dabMap = [];
+foreach ($dabList as $dab) {
+    $dabMap[(int) $dab['id']] = $dab;
+}
 $programMap = [];
 foreach ($programList as $program) {
     $programMap[(int) $program['id']] = $program;
@@ -65,9 +70,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         foreach ($dalFields as $field) {
             $formState[$field] = trim((string) ($_POST[$field] ?? ''));
         }
-        $postedDabIds = is_array($_POST['id_dab'] ?? null) ? $_POST['id_dab'] : [];
-        $selectedDabIds = array_values(array_unique(array_filter(array_map('dal_int_or_null', $postedDabIds))));
-        $formState['id_dab'] = $selectedDabIds;
+        $selectedDabId = dal_int_or_null($_POST['id_dab'] ?? null);
+        $formState['id_dab'] = $selectedDabId ?: '';
 
         $idSkpd = dal_int_or_null($formState['id_skpd']);
         $idProgram = dal_int_or_null($formState['id_program']);
@@ -83,10 +87,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($idProgram && $idSkpd && isset($programMap[$idProgram]) && (int) $programMap[$idProgram]['id_skpd'] !== $idSkpd) {
             $formErrors[] = 'Program yang dipilih tidak sesuai dengan SKPD.';
         }
-        if (!$selectedDabIds) {
-            $formErrors[] = 'Minimal satu DAB wajib dipilih.';
-        } elseif (array_diff($selectedDabIds, array_keys($dabIds))) {
+        if (!$selectedDabId) {
+            $formErrors[] = 'DAB terkait wajib dipilih.';
+        } elseif (!isset($dabMap[$selectedDabId])) {
             $formErrors[] = 'Referensi DAB tidak valid.';
+        } elseif ($idProgram && (int) $dabMap[$selectedDabId]['id_program'] !== $idProgram) {
+            $formErrors[] = 'DAB yang dipilih tidak sesuai dengan program.';
         }
         if ($formState['nama_layanan'] === '') {
             $formErrors[] = 'Nama layanan wajib diisi.';
@@ -160,12 +166,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     db()->prepare('DELETE FROM dal_dab WHERE id_dal = :id')->execute(['id' => $recordId]);
                 }
                 $linkStmt = db()->prepare('INSERT INTO dal_dab (id_dal, id_dab) VALUES (:id_dal, :id_dab)');
-                foreach ($selectedDabIds as $idDab) $linkStmt->execute(['id_dal' => $recordId, 'id_dab' => $idDab]);
+                $linkStmt->execute(['id_dal' => $recordId, 'id_dab' => $selectedDabId]);
 
                 $newStmt = db()->prepare('SELECT * FROM dal WHERE id = :id LIMIT 1');
                 $newStmt->execute(['id' => $recordId]);
                 $newValues = $newStmt->fetch() ?: $params;
-                $newValues['id_dab'] = $selectedDabIds;
+                $newValues['id_dab'] = $selectedDabId;
                 audit_log(
                     (int) $user['id'], $action, 'dal', (int) $recordId,
                     ($action === 'create' ? 'Menambahkan' : 'Mengubah') . ' domain layanan ' . $formState['nama_layanan'],
@@ -260,6 +266,11 @@ $programJson = array_map(static fn(array $p): array => [
     'ral_id' => $p['id_ral'] !== null ? (int) $p['id_ral'] : null,
     'label' => dal_option_label($p['kode_program'], $p['nama_program']),
 ], $programList);
+$dabJson = array_map(static fn(array $d): array => [
+    'id' => (int) $d['id'],
+    'program_id' => (int) $d['id_program'],
+    'label' => sprintf('DAB-%03d %s', (int) $d['id'], trim((string) $d['nama_bisnis'])),
+], $dabList);
 ?>
 
 <section class="space-y-5">
@@ -329,7 +340,7 @@ $programJson = array_map(static fn(array $p): array => [
                         'potensi_risiko' => (string) ($row['potensi_risiko'] ?? ''), 'mitigasi_risiko' => (string) ($row['mitigasi_risiko'] ?? ''),
                         'id_penanggung_jawab' => (int) $row['id_penanggung_jawab'],
                         'id_unit_kerja_pelaksana' => (int) $row['id_unit_kerja_pelaksana'],
-                        'id_dab' => $row['dab_ids'] ? array_map('intval', explode(',', $row['dab_ids'])) : [],
+                        'id_dab' => $row['dab_ids'] ? (int) explode(',', $row['dab_ids'])[0] : '',
                         'skpd_label' => dal_option_label($row['kode_skpd'], $row['nama_skpd']),
                         'program_label' => dal_option_label($row['kode_program'], $row['nama_program']),
                         'ral_label' => dal_option_label($row['kode_ral_4'], $row['nama_ral_4']),
@@ -397,7 +408,7 @@ $programJson = array_map(static fn(array $p): array => [
                 <label><span class="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Program</span><select name="id_program" class="w-full rounded-lg border bg-white px-3 py-2 text-sm" data-dal-field="id_program" required></select></label>
             </div>
             <label><span class="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Referensi RAL</span><select name="id_ral" class="w-full rounded-lg border bg-white px-3 py-2 text-sm" data-dal-field="id_ral" required><option value="">Pilih RAL</option><?php foreach ($ralList as $item): ?><option value="<?= (int) $item['id'] ?>"><?= e(dal_option_label($item['kode_ral_4'], $item['nama_ral_4'])) ?></option><?php endforeach; ?></select></label>
-            <label><span class="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">DAB Terkait</span><select name="id_dab[]" multiple size="4" class="w-full rounded-lg border bg-white px-3 py-2 text-sm" data-dal-dab required><?php foreach ($dabList as $item): ?><option value="<?= (int) $item['id'] ?>"><?= e(trim(($item['kode_skpd'] ? $item['kode_skpd'] . ' - ' : '') . $item['nama_bisnis'])) ?></option><?php endforeach; ?></select><span class="mt-1 block text-[11px] text-slate-500">Gunakan Ctrl/Cmd untuk memilih lebih dari satu.</span></label>
+            <label><span class="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">DAB Terkait</span><select name="id_dab" class="w-full rounded-lg border bg-white px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-400" data-dal-dab required><option value="">Pilih program terlebih dahulu</option></select><span class="mt-1 block text-[11px] text-slate-500">Pilihan DAB disesuaikan dengan program yang dipilih.</span></label>
             <label><span class="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nama Layanan</span><input name="nama_layanan" maxlength="255" class="w-full rounded-lg border px-3 py-2 text-sm" data-dal-field="nama_layanan" required></label>
             <?php foreach ([
                 'tujuan_layanan'=>'Tujuan Layanan', 'fungsi_layanan'=>'Fungsi Layanan',
@@ -447,9 +458,11 @@ $programJson = array_map(static fn(array $p): array => [
     const deleteModal = document.querySelector('[data-modal="dal-delete"]');
     const fields = <?= json_encode(array_merge(['id'], $dalFields), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     const programs = <?= json_encode($programJson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    const dabs = <?= json_encode($dabJson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     const posted = <?= json_encode($formState, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     const field = name => formModal.querySelector(`[data-dal-field="${name}"]`);
     const skpd = field('id_skpd'), program = field('id_program'), ral = field('id_ral'), dab = formModal.querySelector('[data-dal-dab]');
+    const penanggungJawab = field('id_penanggung_jawab'), unitPelaksana = field('id_unit_kerja_pelaksana');
     const open = modal => { modal?.classList.remove('hidden'); modal?.classList.add('flex'); document.body.classList.add('overflow-hidden'); };
     const close = modal => { modal?.classList.add('hidden'); modal?.classList.remove('flex'); if (![...modals].some(x => !x.classList.contains('hidden'))) document.body.classList.remove('overflow-hidden'); };
     const refreshPrograms = selected => {
@@ -458,14 +471,31 @@ $programJson = array_map(static fn(array $p): array => [
         programs.filter(x => Number(x.skpd_id) === skpdId).forEach(x => { const option = new Option(x.label, String(x.id)); option.dataset.ralId = x.ral_id || ''; program.add(option); });
         program.disabled = !skpdId; if (selected) program.value = String(selected);
     };
+    const refreshDabs = selected => {
+        const programId = Number(program.value || 0);
+        dab.innerHTML = '';
+        dab.add(new Option(programId ? 'Pilih DAB' : 'Pilih program terlebih dahulu', ''));
+        dabs.filter(x => Number(x.program_id) === programId).forEach(x => dab.add(new Option(x.label, String(x.id))));
+        dab.disabled = !programId;
+        if (selected) dab.value = String(selected);
+    };
     const fill = record => {
         fields.forEach(name => { const input = field(name); if (input) input.value = record[name] || ''; });
         refreshPrograms(record.id_program || '');
-        [...dab.options].forEach(option => option.selected = (record.id_dab || []).map(Number).includes(Number(option.value)));
+        refreshDabs(record.id_dab || '');
     };
-    skpd.addEventListener('change', () => refreshPrograms(''));
-    program.addEventListener('change', () => { const id = program.selectedOptions[0]?.dataset.ralId; if (id) ral.value = id; });
-    document.querySelector('[data-dal-add]')?.addEventListener('click', () => { fill({id_dab: []}); formModal.querySelector('[data-dal-action]').value='create'; formModal.querySelector('[data-dal-form-title]').textContent='Tambah Data DAL'; formModal.querySelector('[data-dal-submit-label]').textContent='Simpan Data'; open(formModal); });
+    skpd.addEventListener('change', () => {
+        refreshPrograms('');
+        refreshDabs('');
+        penanggungJawab.value = skpd.value;
+        unitPelaksana.value = skpd.value;
+    });
+    program.addEventListener('change', () => {
+        const id = program.selectedOptions[0]?.dataset.ralId;
+        if (id) ral.value = id;
+        refreshDabs('');
+    });
+    document.querySelector('[data-dal-add]')?.addEventListener('click', () => { fill({id_dab: ''}); formModal.querySelector('[data-dal-action]').value='create'; formModal.querySelector('[data-dal-form-title]').textContent='Tambah Data DAL'; formModal.querySelector('[data-dal-submit-label]').textContent='Simpan Data'; open(formModal); });
     document.querySelectorAll('[data-dal-edit]').forEach(button => button.addEventListener('click', () => { fill(JSON.parse(button.dataset.record || '{}')); formModal.querySelector('[data-dal-action]').value='update'; formModal.querySelector('[data-dal-form-title]').textContent='Edit Data DAL'; formModal.querySelector('[data-dal-submit-label]').textContent='Simpan Perubahan'; open(formModal); }));
     document.querySelectorAll('[data-dal-view]').forEach(button => button.addEventListener('click', () => { const record=JSON.parse(button.dataset.record || '{}'); viewModal.querySelectorAll('[data-view-field]').forEach(el => el.textContent=record[el.dataset.viewField] || '—'); open(viewModal); }));
     document.querySelectorAll('[data-dal-delete]').forEach(button => button.addEventListener('click', () => { deleteModal.querySelector('[data-delete-id]').value=button.dataset.id; deleteModal.querySelector('[data-delete-name]').textContent=button.dataset.name; open(deleteModal); }));
@@ -473,6 +503,7 @@ $programJson = array_map(static fn(array $p): array => [
     modals.forEach(modal => modal.addEventListener('click', event => { if (event.target === modal) close(modal); }));
     document.addEventListener('keydown', event => { if (event.key === 'Escape') modals.forEach(close); });
     refreshPrograms(posted.id_program || '');
+    refreshDabs(posted.id_dab || '');
     <?php if ($openFormModal): ?>fill(posted); formModal.querySelector('[data-dal-action]').value=<?= json_encode($formMode) ?>; formModal.querySelector('[data-dal-form-title]').textContent=<?= json_encode($formMode === 'update' ? 'Edit Data DAL' : 'Tambah Data DAL') ?>; open(formModal);<?php endif; ?>
 })();
 </script>
