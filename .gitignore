@@ -1,0 +1,10 @@
+# File Konfigurasi
+.env
+
+# Folder Upload (abaikan isi folder ini agar file upload tidak masuk repo)
+uploads/*
+!uploads/.gitkeep
+
+# File Sistem Operasi
+.DS_Store
+Thumbs.db
